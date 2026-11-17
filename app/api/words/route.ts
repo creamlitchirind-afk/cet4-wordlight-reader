@@ -27,7 +27,7 @@ export async function GET(request: Request) {
     .orderBy(desc(unknownWords.lastClickedAt));
   return Response.json({
     words: rows.map((row) => ({ ...row, contexts: parseList(row.contexts), documentIds: parseList(row.documentIds) })),
-  });
+  }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(request: Request) {

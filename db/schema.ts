@@ -4,6 +4,7 @@ export const readingDocuments = sqliteTable("reading_documents", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
   title: text("title").notNull(),
+  passageId: text("passage_id").notNull().default(""),
   body: text("body").notNull(),
   questions: text("questions").notNull().default(""),
   createdAt: integer("created_at").notNull(),

@@ -7,13 +7,12 @@ const VALID_OPTIONS = new Set(["A", "B", "C", "D", "?"]);
 
 export async function GET(request: Request) {
   const documentId = new URL(request.url).searchParams.get("documentId")?.trim().slice(0, 100) || "";
-  if (!documentId) return Response.json({ answers: [] });
   const rows = await getDb()
     .select()
     .from(readingAnswers)
-    .where(and(eq(readingAnswers.userId, OWNER_KEY), eq(readingAnswers.documentId, documentId)))
+    .where(documentId ? and(eq(readingAnswers.userId, OWNER_KEY), eq(readingAnswers.documentId, documentId)) : eq(readingAnswers.userId, OWNER_KEY))
     .orderBy(asc(readingAnswers.questionNumber));
-  return Response.json({ answers: rows });
+  return Response.json({ answers: rows }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(request: Request) {

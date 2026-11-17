@@ -1,9 +1,9 @@
 "use client";
 
-import { BookOpen, Check, CircleHelp, ClipboardCopy, Download, FileUp, Highlighter, Leaf, Plus, Save, Sparkles, X } from "lucide-react";
-import { ChangeEvent, KeyboardEvent, MouseEvent, useEffect, useMemo, useState } from "react";
+import { BookOpen, Check, CircleHelp, ClipboardCopy, Download, FileUp, Highlighter, Leaf, Plus, RefreshCw, Save, Sparkles, X } from "lucide-react";
+import { ChangeEvent, KeyboardEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type ReadingDocument = { id: string; title: string; body: string; questions: string; createdAt?: number; updatedAt?: number };
+type ReadingDocument = { id: string; title: string; passageId?: string; body: string; questions: string; createdAt?: number; updatedAt?: number };
 type WordRecord = { normalized: string; display: string; clickCount: number; contexts: string[]; documentIds: string[]; lastClickedAt: number };
 type ParsedQuestion = { number: number; prompt: string; options: { letter: string; text: string }[] };
 type AnswerRecord = { documentId: string; questionNumber: number; selectedOption: string; updatedAt: number };
@@ -57,36 +57,70 @@ export default function ReadingStudio() {
   const [documents, setDocuments] = useState<ReadingDocument[]>([]);
   const [current, setCurrent] = useState<ReadingDocument>(sample);
   const [words, setWords] = useState<WordRecord[]>([]);
-  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [syncing, setSyncing] = useState(false);
+  const [lastSynced, setLastSynced] = useState("");
+  const syncLock = useRef(false);
+  const writes = useRef(0);
+  const revision = useRef(0);
   const [showImport, setShowImport] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("点击正文、题干或选项里的英文单词，即可点亮并自动保存。");
 
   const activeWords = useMemo(() => new Set(words.map((word) => word.normalized)), [words]);
-  const parsedQuestions = useMemo(() => parseQuestions(current.questions), [current.questions]);
-  const answeredCount = parsedQuestions.filter((question) => answers[question.number]).length;
+  const related = useMemo(() => (current.passageId
+    ? documents.filter((doc) => doc.passageId === current.passageId)
+    : [current]).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)), [current, documents]);
+  const parsedQuestions = useMemo(() => related.flatMap((doc) => parseQuestions(doc.questions).map((q) => ({ ...q, documentId: doc.id, sourceTitle: doc.title }))), [related]);
+  const answeredCount = parsedQuestions.filter((q) => answers[`${q.documentId}:${q.number}`]).length;
+  const library = useMemo(() => documents.filter((doc, index, all) => !doc.passageId || all.findIndex((item) => item.passageId === doc.passageId) === index), [documents]);
+
+  const refreshMaterials = useCallback(async (manual = false) => {
+    if (showImport) { if (manual) setNotice("请先保存或关闭导入编辑，再刷新材料。"); return; }
+    if (syncLock.current || writes.current) { if (manual) setNotice("正在保存，请稍后刷新。"); return; }
+    syncLock.current = true;
+    setSyncing(true);
+    const started = revision.current;
+    try {
+      const [docData, wordData, answerData] = await Promise.all(["/api/documents", "/api/words", "/api/answers"].map(async (url) => {
+        const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+        if (!response.ok) throw new Error("同步失败");
+        return response.json();
+      }));
+      if (started !== revision.current || writes.current) return;
+      const saved: ReadingDocument[] = docData.documents ?? [];
+      setDocuments(saved);
+      setCurrent((previous) => saved.find((doc) => doc.id === previous.id) ?? (previous.id === sample.id ? saved[0] ?? previous : previous));
+      setWords(wordData.words ?? []);
+      const next: Record<string, string> = {};
+      for (const answer of (answerData.answers ?? []) as AnswerRecord[]) next[`${answer.documentId}:${answer.questionNumber}`] = answer.selectedOption;
+      setAnswers(next);
+      setLastSynced(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+      if (manual) setNotice("已从云端重新获取最新材料、答案和生词；学习记录已保留。");
+    } catch {
+      setNotice("暂时无法同步，已保留页面内容。网络恢复后自动重试，也可点击刷新材料。");
+    } finally {
+      syncLock.current = false;
+      setSyncing(false);
+    }
+  }, [showImport]);
 
   useEffect(() => {
-    Promise.all([fetch("/api/documents").then((response) => response.json()), fetch("/api/words").then((response) => response.json())])
-      .then(([documentData, wordData]) => {
-        const savedDocuments = documentData.documents ?? [];
-        setDocuments(savedDocuments);
-        if (savedDocuments.length) setCurrent(savedDocuments[0]);
-        setWords(wordData.words ?? []);
-      })
-      .catch(() => setNotice("暂时无法连接云端，刷新后重试。"));
-  }, []);
-
-  useEffect(() => {
-    fetch(`/api/answers?documentId=${encodeURIComponent(current.id)}`)
-      .then((response) => response.json())
-      .then((data) => {
-        const next: Record<number, string> = {};
-        for (const answer of (data.answers ?? []) as AnswerRecord[]) next[answer.questionNumber] = answer.selectedOption;
-        setAnswers(next);
-      })
-      .catch(() => setNotice("答题记录暂时没有加载成功，点选前请刷新一次。"));
-  }, [current.id]);
+    const sync = () => { if (document.visibilityState !== "hidden") void refreshMaterials(); };
+    const initial = window.setTimeout(sync, 0);
+    const timer = window.setInterval(sync, 15000);
+    window.addEventListener("focus", sync);
+    window.addEventListener("online", sync);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      revision.current += 1;
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("online", sync);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [refreshMaterials]);
 
   async function saveDocument() {
     setBusy(true);
@@ -106,42 +140,52 @@ export default function ReadingStudio() {
     }
   }
 
-  async function toggleWord(display: string, context: string) {
+  async function toggleWord(display: string, context: string, documentId = current.id) {
     const normalized = normalizeWord(display);
     if (!normalized) return;
+    revision.current += 1;
+    writes.current += 1;
     const active = activeWords.has(normalized);
     if (active) setWords((existing) => existing.filter((word) => word.normalized !== normalized));
-    else setWords((existing) => [{ normalized, display, clickCount: 1, contexts: [context], documentIds: [current.id], lastClickedAt: Date.now() }, ...existing]);
+    else setWords((existing) => [{ normalized, display, clickCount: 1, contexts: [context], documentIds: [documentId], lastClickedAt: Date.now() }, ...existing]);
     try {
-      const response = await fetch("/api/words", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: active ? "unmark" : "mark", word: display, context, documentId: current.id }) });
+      const response = await fetch("/api/words", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: active ? "unmark" : "mark", word: display, context, documentId }) });
       if (!response.ok) throw new Error();
       setNotice(active ? `已取消 ${display}` : `已点亮 ${display}，继续阅读即可。`);
     } catch {
       setNotice("这次点词没有保存成功，请再点一次。");
       const data = await fetch("/api/words").then((response) => response.json()).catch(() => ({ words: [] }));
       setWords(data.words ?? []);
+    } finally {
+      writes.current -= 1;
     }
   }
 
-  async function selectAnswer(questionNumber: number, selectedOption: string) {
-    const previous = answers[questionNumber];
-    setAnswers((existing) => ({ ...existing, [questionNumber]: selectedOption }));
+  async function selectAnswer(documentId: string, questionNumber: number, selectedOption: string) {
+    if (writes.current) return;
+    revision.current += 1;
+    writes.current += 1;
+    const key = `${documentId}:${questionNumber}`;
+    const previous = answers[key];
+    setAnswers((existing) => ({ ...existing, [key]: selectedOption }));
     setNotice(selectedOption === "?" ? `第${questionNumber}题已记为“暂时不会”。` : `第${questionNumber}题已选择 ${selectedOption}。`);
     try {
-      const response = await fetch("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ documentId: current.id, questionNumber, selectedOption }) });
+      const response = await fetch("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ documentId, questionNumber, selectedOption }) });
       if (!response.ok) throw new Error();
     } catch {
       setAnswers((existing) => {
         const next = { ...existing };
-        if (previous) next[questionNumber] = previous;
-        else delete next[questionNumber];
+        if (previous) next[key] = previous;
+        else delete next[key];
         return next;
       });
       setNotice("答案没有保存成功，请再选一次。");
+    } finally {
+      writes.current -= 1;
     }
   }
 
-  function renderInteractiveText(text: string, fixedContext?: string) {
+  function renderInteractiveText(text: string, fixedContext?: string, documentId = current.id) {
     const pieces = text.split(/([A-Za-z]+(?:['’-][A-Za-z]+)*)/g);
     let offset = 0;
     return pieces.map((piece, index) => {
@@ -151,17 +195,18 @@ export default function ReadingStudio() {
       const active = activeWords.has(normalizeWord(piece));
       return (
         <button type="button" key={`${index}-${start}`} className={`word-token ${active ? "word-token-active" : ""}`} aria-pressed={active} title={active ? "再次点击可取消标记" : "点击标记为生词"}
-          onClick={(event: MouseEvent<HTMLButtonElement>) => { event.stopPropagation(); toggleWord(piece, fixedContext || sentenceAt(text, start)); }}>
+          onKeyDown={(event) => event.stopPropagation()}
+          onClick={(event: MouseEvent<HTMLButtonElement>) => { event.stopPropagation(); toggleWord(piece, fixedContext || sentenceAt(text, start), documentId); }}>
           {piece}
         </button>
       );
     });
   }
 
-  function handleOptionKey(event: KeyboardEvent<HTMLDivElement>, questionNumber: number, letter: string) {
+  function handleOptionKey(event: KeyboardEvent<HTMLDivElement>, documentId: string, questionNumber: number, letter: string) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      selectAnswer(questionNumber, letter);
+      selectAnswer(documentId, questionNumber, letter);
     }
   }
 
@@ -173,21 +218,19 @@ export default function ReadingStudio() {
     if (file.name.toLowerCase().endsWith(".json")) {
       try {
         const parsed = JSON.parse(raw);
-        next = { id: String(parsed.id || crypto.randomUUID()), title: String(parsed.title || file.name.replace(/\.json$/i, "")), body: String(parsed.body || parsed.text || ""), questions: Array.isArray(parsed.questions) ? parsed.questions.join("\n") : String(parsed.questions || "") };
+        next = { id: String(parsed.id || crypto.randomUUID()), passageId: String(parsed.passageId || ""), title: String(parsed.title || file.name.replace(/\.json$/i, "")), body: String(parsed.body || parsed.text || ""), questions: Array.isArray(parsed.questions) ? parsed.questions.join("\n") : String(parsed.questions || "") };
       } catch {
         setNotice("JSON格式无法识别，请检查title、body/text和questions字段。");
         return;
       }
     } else next = { id: crypto.randomUUID(), title: file.name.replace(/\.(txt|md)$/i, ""), body: raw, questions: "" };
     setCurrent(next);
-    setAnswers({});
     setShowImport(true);
     event.target.value = "";
   }
 
   function newImport() {
     setCurrent({ id: crypto.randomUUID(), title: "", body: "", questions: "" });
-    setAnswers({});
     setShowImport(true);
   }
 
@@ -216,6 +259,7 @@ export default function ReadingStudio() {
             <div className="min-w-0"><h1 className="truncate text-lg font-bold tracking-tight">四级点词阅读器</h1><p className="truncate text-xs text-[#718078]">读懂、点亮、作答，一次完成</p></div>
           </div>
           <div className="flex items-center gap-2">
+            <button type="button" className="secondary-button" disabled={syncing || showImport} onClick={() => void refreshMaterials(true)} title="跳过缓存重新获取材料；不会清除答案和生词" aria-label="刷新材料"><RefreshCw size={16} className={syncing ? "animate-spin" : ""} /><span className="hidden sm:inline">{syncing ? "同步中" : "刷新材料"}</span></button>
             <label className="secondary-button cursor-pointer"><FileUp size={16} /> <span className="hidden sm:inline">导入文件</span><input type="file" accept=".txt,.md,.json,text/plain,application/json" className="sr-only" onChange={importFile} /></label>
             <button type="button" className="primary-button" onClick={newImport}><Plus size={16} /> <span className="hidden sm:inline">新建导入</span></button>
           </div>
@@ -224,11 +268,12 @@ export default function ReadingStudio() {
 
       <div className="mx-auto grid max-w-[1480px] grid-cols-1 gap-4 px-4 py-5 lg:grid-cols-[210px_minmax(0,1fr)_300px] lg:px-7">
         <aside className="paper-panel order-2 p-4 lg:order-1 lg:sticky lg:top-[86px] lg:h-[calc(100vh-106px)]">
-          <div className="mb-3 flex items-center justify-between"><h2 className="section-label"><BookOpen size={15} /> 阅读库</h2><span className="count-pill">{documents.length}</span></div>
+          <div className="mb-3 flex items-center justify-between"><h2 className="section-label"><BookOpen size={15} /> 阅读库</h2><span className="count-pill">{library.length}</span></div>
+          <p className="mb-3 text-xs text-[#718078]">每15秒自动同步 · {lastSynced || "正在连接"}</p>
           <div className="space-y-2 overflow-auto lg:max-h-[calc(100vh-160px)]">
             {documents.length === 0 && <p className="soft-note">还没有保存的材料。可以先体验示例，或导入TXT、MD、JSON。</p>}
-            {documents.map((document) => (
-              <button type="button" key={document.id} className={`library-item ${current.id === document.id ? "library-item-active" : ""}`} onClick={() => { setAnswers({}); setCurrent(document); setShowImport(false); }}>
+            {library.map((document) => (
+              <button type="button" key={document.id} className={`library-item ${current.id === document.id || (current.passageId && current.passageId === document.passageId) ? "library-item-active" : ""}`} onClick={() => { setCurrent(document); setShowImport(false); }}>
                 <span className="line-clamp-2 font-semibold">{document.title}</span><span className="mt-1 block text-xs opacity-60">{wordCount(document.body)}词</span>
               </button>
             ))}
@@ -240,6 +285,7 @@ export default function ReadingStudio() {
             <div className="paper-panel p-5 sm:p-7">
               <div className="mb-5 flex items-center justify-between"><div><p className="eyebrow">IMPORT READING</p><h2 className="text-2xl font-bold">导入阅读材料</h2></div><button type="button" className="icon-button" onClick={() => setShowImport(false)} aria-label="关闭导入"><X size={18} /></button></div>
               <label className="field-label">标题<input className="text-input" value={current.title} onChange={(event) => setCurrent({ ...current, title: event.target.value })} placeholder="例如：2025年6月四级 Passage One" /></label>
+              <label className="field-label">同篇阅读标识（可选）<input className="text-input" value={current.passageId || ""} onChange={(event) => setCurrent({ ...current, passageId: event.target.value })} placeholder="同一篇的各次导入填写相同标识，旧题会保留" /></label>
               <label className="field-label">阅读正文<textarea className="text-area min-h-64" value={current.body} onChange={(event) => setCurrent({ ...current, body: event.target.value })} placeholder="粘贴英文正文，或使用右上角导入TXT/MD/JSON…" /></label>
               <label className="field-label">题目与选项<textarea className="text-area min-h-36" value={current.questions} onChange={(event) => setCurrent({ ...current, questions: event.target.value })} placeholder="格式示例：47. 题干，下一行 A) 选项" /></label>
               <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-[#718078]">保存后，正文、题干和选项里的英文词都可点击。</p><button type="button" className="primary-button" disabled={busy} onClick={saveDocument}><Save size={16} /> {busy ? "保存中…" : "保存并开始阅读"}</button></div>
@@ -247,30 +293,36 @@ export default function ReadingStudio() {
           ) : (
             <article className="paper-panel overflow-hidden">
               <div className="article-head px-5 py-5 sm:px-9"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">FOCUSED READING</p><h2 className="max-w-3xl text-2xl font-bold sm:text-3xl">{current.title}</h2></div><div className="flex gap-2"><span className="stat-chip">{wordCount(current.body)}词</span><span className="stat-chip stat-chip-amber">{words.length}个生词</span></div></div></div>
-              <div className="reading-text px-5 py-8 sm:px-11 sm:py-11">{renderInteractiveText(current.body)}</div>
+              <div className="px-5 py-8 sm:px-11 sm:py-11">
+                {related.map((doc, index) => <section key={doc.id} className={index ? "mt-7 border-t border-[#26322d]/10 pt-5" : ""}>
+                  {related.length > 1 && <p className="eyebrow">{index === 0 ? "最新阅读片段" : "之前的阅读片段"} · {doc.title}</p>}
+                  <div className="reading-text" style={{ minHeight: 0 }}>{renderInteractiveText(doc.body, undefined, doc.id)}</div>
+                </section>)}
+              </div>
               {parsedQuestions.length > 0 && (
                 <div className="question-zone px-5 py-7 sm:px-9 sm:py-9">
                   <div className="mb-5 flex items-center justify-between gap-3"><div><p className="eyebrow">COMPREHENSION</p><h3 className="text-xl font-bold">阅读题</h3></div><span className="progress-pill">{answeredCount}/{parsedQuestions.length} 已记录</span></div>
                   <div className="space-y-6">
-                    {parsedQuestions.map((question) => {
-                      const selected = answers[question.number];
+                    {parsedQuestions.map((question, index) => {
+                      const selected = answers[`${question.documentId}:${question.number}`];
                       return (
-                        <section className="question-card" key={question.number}>
-                          <div className="question-title"><span className="question-number">{question.number}</span><p>{renderInteractiveText(question.prompt, `${question.number}. ${question.prompt}`)}</p></div>
+                        <section className="question-card" key={`${question.documentId}:${question.number}`}>
+                          <p className="eyebrow">{index === 0 ? "最新题目" : "保留题目"} · {question.sourceTitle}</p>
+                          <div className="question-title"><span className="question-number">{question.number}</span><p>{renderInteractiveText(question.prompt, `${question.number}. ${question.prompt}`, question.documentId)}</p></div>
                           {question.options.length > 0 && (
                             <div className="mt-4 grid gap-2.5" role="radiogroup" aria-label={`第${question.number}题选项`}>
                               {question.options.map((option) => {
                                 const isSelected = selected === option.letter;
                                 const context = `${question.number}. ${question.prompt} ${option.letter}) ${option.text}`;
                                 return (
-                                  <div key={option.letter} className={`option-card ${isSelected ? "option-card-selected" : ""}`} role="radio" aria-checked={isSelected} tabIndex={0} onClick={() => selectAnswer(question.number, option.letter)} onKeyDown={(event) => handleOptionKey(event, question.number, option.letter)}>
-                                    <span className="option-letter">{isSelected ? <Check size={16} /> : option.letter}</span><span className="option-text">{renderInteractiveText(option.text, context)}</span>
+                                  <div key={option.letter} className={`option-card ${isSelected ? "option-card-selected" : ""}`} role="radio" aria-checked={isSelected} tabIndex={0} onClick={() => selectAnswer(question.documentId, question.number, option.letter)} onKeyDown={(event) => handleOptionKey(event, question.documentId, question.number, option.letter)}>
+                                    <span className="option-letter">{isSelected ? <Check size={16} /> : option.letter}</span><span className="option-text">{renderInteractiveText(option.text, context, question.documentId)}</span>
                                   </div>
                                 );
                               })}
                             </div>
                           )}
-                          <button type="button" className={`unsure-button ${selected === "?" ? "unsure-button-selected" : ""}`} onClick={() => selectAnswer(question.number, "?")}><CircleHelp size={16} /> {selected === "?" ? "已记录：暂时不会" : "暂时不会，先记录"}</button>
+                          <button type="button" className={`unsure-button ${selected === "?" ? "unsure-button-selected" : ""}`} onClick={() => selectAnswer(question.documentId, question.number, "?")}><CircleHelp size={16} /> {selected === "?" ? "已记录：暂时不会" : "暂时不会，先记录"}</button>
                         </section>
                       );
                     })}

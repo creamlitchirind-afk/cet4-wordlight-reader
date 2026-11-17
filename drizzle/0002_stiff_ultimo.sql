@@ -1,0 +1,1 @@
+ALTER TABLE `reading_documents` ADD `passage_id` text DEFAULT '' NOT NULL;

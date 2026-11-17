@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     .from(readingDocuments)
     .where(eq(readingDocuments.userId, uid))
     .orderBy(desc(readingDocuments.updatedAt));
-  return Response.json({ documents: rows });
+  return Response.json({ documents: rows }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(request: Request) {
@@ -22,6 +22,7 @@ export async function POST(request: Request) {
     title?: string;
     body?: string;
     questions?: string;
+    passageId?: string;
   };
   const id = String(input.id || crypto.randomUUID());
   const title = String(input.title || "未命名阅读").trim().slice(0, 120);
@@ -33,16 +34,17 @@ export async function POST(request: Request) {
   }
   const now = Date.now();
   const existing = await getDb()
-    .select({ id: readingDocuments.id, createdAt: readingDocuments.createdAt })
+    .select({ id: readingDocuments.id, createdAt: readingDocuments.createdAt, passageId: readingDocuments.passageId })
     .from(readingDocuments)
     .where(and(eq(readingDocuments.id, id), eq(readingDocuments.userId, uid)))
     .limit(1);
+  const passageId = input.passageId === undefined ? existing[0]?.passageId ?? "" : String(input.passageId).trim().slice(0, 120);
   await getDb()
     .insert(readingDocuments)
-    .values({ id, userId: uid, title, body, questions, createdAt: existing[0]?.createdAt ?? now, updatedAt: now })
+    .values({ id, userId: uid, title, passageId, body, questions, createdAt: existing[0]?.createdAt ?? now, updatedAt: now })
     .onConflictDoUpdate({
       target: readingDocuments.id,
-      set: { title, body, questions, updatedAt: now },
+      set: { title, passageId, body, questions, updatedAt: now },
     });
   const saved = await getDb()
     .select()

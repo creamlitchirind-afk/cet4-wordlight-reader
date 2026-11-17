@@ -11,6 +11,8 @@
 - **AI 双向协作**：AI 可以导入阅读材料，读取生词和答案；本项目不内置大模型推理，也不要求填写模型 API Key。
 - **材料导入**：TXT、Markdown、JSON 和手动粘贴；Markdown 当前按纯文本展示。
 - **阅读界面**：暖白纸张、墨绿交互、琥珀高亮，适配桌面和手机。
+- **同篇归组**：同一文章的碎片设置相同 `passageId`，每份碎片保留独立 `id`；新片段与新题按创建时间排在上方，旧题及答案仍可查看。
+- **持续同步**：可见页面每15秒获取最新材料，切回页面或恢复联网时也会同步；“刷新材料”跳过缓存重新读取，不删除生词和答案。导入编辑期间暂停同步。
 
 ## 技术组成
 
@@ -41,6 +43,7 @@ npm run build
 ```json
 {
   "title": "A very busy potato",
+  "passageId": "potato-reading",
   "body": "A potato opened a library. Unfortunately, it could not read.",
   "questions": "1. What did the potato open?\nA) A library\nB) A school\nC) A shop\nD) A bank"
 }

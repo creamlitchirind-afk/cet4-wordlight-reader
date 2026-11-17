@@ -68,6 +68,7 @@ export async function POST(request: Request) {
               title: { type: "string" },
               body: { type: "string" },
               questions: { type: "string" },
+              passageId: { type: "string", description: "同一篇阅读的各碎片使用相同标识；每个碎片仍保留自己的id，页面会把新题排在旧题上方。" },
             },
             required: ["title", "body"],
             additionalProperties: false,
@@ -127,10 +128,11 @@ export async function POST(request: Request) {
       return reply(payload.id, { content: [{ type: "text", text: "正文为空或材料过长。" }], isError: true });
     }
     const now = Date.now();
-    const existing = await db.select({ createdAt: readingDocuments.createdAt }).from(readingDocuments).where(and(eq(readingDocuments.userId, uid), eq(readingDocuments.id, id))).limit(1);
-    await db.insert(readingDocuments).values({ id, userId: uid, title, body, questions, createdAt: existing[0]?.createdAt ?? now, updatedAt: now }).onConflictDoUpdate({
+    const existing = await db.select({ createdAt: readingDocuments.createdAt, passageId: readingDocuments.passageId }).from(readingDocuments).where(and(eq(readingDocuments.userId, uid), eq(readingDocuments.id, id))).limit(1);
+    const passageId = args.passageId === undefined ? existing[0]?.passageId ?? "" : String(args.passageId).trim().slice(0, 120);
+    await db.insert(readingDocuments).values({ id, userId: uid, title, passageId, body, questions, createdAt: existing[0]?.createdAt ?? now, updatedAt: now }).onConflictDoUpdate({
       target: readingDocuments.id,
-      set: { title, body, questions, updatedAt: now },
+      set: { title, passageId, body, questions, updatedAt: now },
     });
     const data = { id, title, updatedAt: new Date(now).toISOString() };
     return reply(payload.id, { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] });
