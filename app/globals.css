@@ -320,6 +320,19 @@ label:focus-within {
 .memory-stage-3 { background: #e1edf8; color: #24496b; }
 .memory-stage-4 { background: transparent; color: inherit; }
 .memory-stage-1:hover { background: #214c7c; color: #fff; }
+.exclude-button { flex: 0 0 40px; border: 1px solid #d6ddd6; border-radius: 12px; background: #faf9f4; color: #6c756e; font-size: 26px; cursor: pointer; }
+.exclude-button:hover, .exclude-button:focus-visible { background: #f3e5dc; color: #934a32; outline: 2px solid #b37b61; }
+.option-excluded .option-card { background: #f0efeb; border-style: dashed; }
+.option-excluded .option-letter { text-decoration: line-through; }
+.option-excluded .exclude-button { color: #934a32; background: #f3e5dc; }
+.exclusion-note { padding: 10px 12px; font-size: 12px; line-height: 1.7; color: #6c594d; overflow-wrap: anywhere; }
+.exclusion-note blockquote { border-left: 2px solid #c4ae95; padding-left: 9px; margin-top: 6px; }
+.evidence-sentence { display: inline; text-align: left; border-radius: 5px; padding: 3px 4px; margin: 2px 0; cursor: pointer; border: 1px dashed #a3b4a8; white-space: normal; }
+.evidence-sentence:hover, .evidence-sentence:focus-visible { background: #eef2df; outline: 2px solid #587961; }
+.evidence-sentence.evidence-chosen { background: #dce9c7; border: 1px solid #5c784e; }
+.evidence-toolbar { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 45; width: min(680px, 94vw); padding: 14px 18px; border: 1px solid #a6b9a4; border-radius: 16px; background: #fffef9; box-shadow: 0 6px 30px #26322d33; display: flex; gap: 12px; align-items: center; font-size: 13px; }
+@media (max-width: 600px) { .evidence-toolbar { flex-direction: column; align-items: stretch; } }
+body:has(.evidence-toolbar) { padding-bottom: 155px; }
 .word-card.memory-card-1, .word-card.memory-card-1:hover { background: #285a91; color: white; border-color: #285a91; }
 .word-card.memory-card-2, .word-card.memory-card-2:hover { background: #c1d8ed; color: #163b65; border-color: #a4c7e9; }
 .word-card.memory-card-3, .word-card.memory-card-3:hover { background: #e8f0f8; color: #24496b; border-color: #c7d8e8; }

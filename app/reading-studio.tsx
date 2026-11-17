@@ -4,6 +4,8 @@ import { BookOpen, Check, CircleHelp, ClipboardCopy, Download, FileUp, Highlight
 import { ChangeEvent, KeyboardEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isReviewCandidate, normalizeWord, pageWordForms, STAGE_LABELS, type WordAction } from "@/lib/word-memory";
 import { ReviewBreak, WordMemoryDialog, type MemoryWord, type WordSelection } from "./word-memory-controls";
+import { ExclusionEditor } from "./exclusion-editor";
+import { sentences, type Exclusion, type ExclusionDraft, type ExclusionEvent } from "@/lib/exclusions";
 
 type ReadingDocument = { id: string; title: string; passageId?: string; body: string; questions: string; createdAt?: number; updatedAt?: number };
 type WordRecord = MemoryWord & { clickCount: number; lastClickedAt: number; lastAdvancedAt: number };
@@ -62,6 +64,12 @@ export default function ReadingStudio() {
   const [selection, setSelection] = useState<WordSelection | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [showMastered, setShowMastered] = useState(false);
+  const [exclusions, setExclusions] = useState<Exclusion[]>([]);
+  const [exclusionHistory, setExclusionHistory] = useState<ExclusionEvent[]>([]);
+  const [draft, setDraft] = useState<ExclusionDraft | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [exclusionBusy, setExclusionBusy] = useState(false);
+  const [exclusionError, setExclusionError] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [lastSynced, setLastSynced] = useState("");
   const syncLock = useRef(false);
@@ -86,16 +94,16 @@ export default function ReadingStudio() {
   }, [related, words]);
 
   const refreshMaterials = useCallback(async (manual = false) => {
-    if (showImport) { if (manual) setNotice("请先保存或关闭导入编辑，再刷新材料。"); return; }
+    if (showImport || draft) { if (manual) setNotice("请先保存或关闭当前编辑，再刷新材料。"); return; }
     if (syncLock.current || writes.current) { if (manual) setNotice("正在保存，请稍后刷新。"); return; }
     syncLock.current = true;
     setSyncing(true);
     const started = revision.current;
     try {
-      const [docData, wordData, answerData] = await Promise.all(["/api/documents", "/api/words", "/api/answers"].map(async (url) => {
+      const [docData, wordData, answerData, exclusionData] = await Promise.all(["/api/documents", "/api/words", "/api/answers", "/api/exclusions"].map(async (url) => {
         const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10000) });
         if (!response.ok) throw new Error("同步失败");
-        return response.json() as Promise<{ documents?: ReadingDocument[]; words?: WordRecord[]; answers?: AnswerRecord[]; history?: AnswerEvent[] }>;
+        return response.json() as Promise<{ documents?: ReadingDocument[]; words?: WordRecord[]; answers?: AnswerRecord[]; history?: AnswerEvent[]; exclusions?: Exclusion[] }>;
       }));
       if (started !== revision.current || writes.current) return;
       const saved: ReadingDocument[] = docData.documents ?? [];
@@ -106,6 +114,8 @@ export default function ReadingStudio() {
       for (const answer of (answerData.answers ?? []) as AnswerRecord[]) next[`${answer.documentId}:${answer.questionNumber}`] = answer.selectedOption;
       setAnswers(next);
       setAnswerHistory(answerData.history ?? []);
+      setExclusions(exclusionData.exclusions ?? []);
+      setExclusionHistory((exclusionData as unknown as { history: ExclusionEvent[] }).history ?? []);
       setLastSynced(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
       if (manual) setNotice("已从云端重新获取最新材料、答案和生词；学习记录已保留。");
     } catch {
@@ -114,7 +124,7 @@ export default function ReadingStudio() {
       syncLock.current = false;
       setSyncing(false);
     }
-  }, [showImport]);
+  }, [showImport, draft]);
 
   useEffect(() => {
     const sync = () => { if (document.visibilityState !== "hidden") void refreshMaterials(); };
@@ -178,6 +188,7 @@ export default function ReadingStudio() {
   }
 
   async function selectAnswer(documentId: string, questionNumber: number, selectedOption: string) {
+    if (exclusions.some(e => e.documentId === documentId && e.questionNumber === questionNumber && e.option === selectedOption && e.excluded)) { setNotice("这个选项已被你排除，请先点末尾×编辑并撤销排除。"); return; }
     if (writes.current) return;
     revision.current += 1;
     writes.current += 1;
@@ -224,6 +235,7 @@ export default function ReadingStudio() {
   }
 
   function handleOptionKey(event: KeyboardEvent<HTMLDivElement>, documentId: string, questionNumber: number, letter: string) {
+    if (event.target !== event.currentTarget) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       selectAnswer(documentId, questionNumber, letter);
@@ -261,7 +273,7 @@ export default function ReadingStudio() {
   }
 
   function downloadSummary() {
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), document: current.title, answers, answerHistory, words }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), document: current.title, answers, answerHistory, words, exclusions, exclusionHistory }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -270,6 +282,25 @@ export default function ReadingStudio() {
     URL.revokeObjectURL(url);
   }
 
+  function editExclusion(documentId: string, questionNumber: number, option: string) {
+    const old = exclusions.find(e => e.documentId === documentId && e.questionNumber === questionNumber && e.option === option);
+    setDraft({ documentId, questionNumber, option, reason: old?.reason ?? "", evidence: old?.evidence ?? [] });
+    setPicking(false); setExclusionError("");
+  }
+  async function saveExclusion(excluded: boolean) {
+    if (!draft || writes.current) return;
+    writes.current++; revision.current++; setExclusionBusy(true); setExclusionError("");
+    try {
+      const r = await fetch("/api/exclusions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...draft, excluded }) });
+      const data = await r.json() as { error?: string; exclusion: Exclusion; event: ExclusionEvent };
+      if (!r.ok) throw new Error(data.error || "保存失败，请重试。");
+      setExclusions(rows => [data.exclusion, ...rows.filter(e => !(e.documentId === draft.documentId && e.questionNumber === draft.questionNumber && e.option === draft.option))]);
+      setExclusionHistory(rows => [data.event, ...rows]);
+      setNotice(`第${draft.questionNumber}题 ${draft.option}：${excluded ? "排除及思路已保存" : "已撤销排除，历史保留"}。`);
+      setDraft(null); setPicking(false);
+    } catch (e) { setExclusionError(e instanceof Error ? e.message : "保存失败，草稿已保留。"); }
+    finally { writes.current--; setExclusionBusy(false); }
+  }
   return (
     <main className="reader-shell min-h-screen text-[#26322d]">
       <header className="reader-header sticky top-0 z-30">
@@ -278,7 +309,7 @@ export default function ReadingStudio() {
             <div className="brand-mark"><Leaf size={20} /></div>
             <div className="min-w-0"><h1 className="truncate text-lg font-bold tracking-tight">四级点词阅读器</h1><p className="truncate text-xs text-[#718078]">读懂、点亮、作答，一次完成</p></div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-2 ${draft ? "pointer-events-none opacity-50" : ""}`} inert={!!draft}>
             <button type="button" className="secondary-button" disabled={syncing || showImport} onClick={() => void refreshMaterials(true)} title="跳过缓存重新获取材料；不会清除答案和生词" aria-label="刷新材料"><RefreshCw size={16} className={syncing ? "animate-spin" : ""} /><span className="hidden sm:inline">{syncing ? "同步中" : "刷新材料"}</span></button>
             <label className="secondary-button cursor-pointer"><FileUp size={16} /> <span className="hidden sm:inline">导入文件</span><input type="file" accept=".txt,.md,.json,text/plain,application/json" className="sr-only" onChange={importFile} /></label>
             <button type="button" className="primary-button" onClick={newImport}><Plus size={16} /> <span className="hidden sm:inline">新建导入</span></button>
@@ -287,7 +318,7 @@ export default function ReadingStudio() {
       </header>
 
       <div className="mx-auto grid max-w-[1480px] grid-cols-1 gap-4 px-4 py-5 lg:grid-cols-[210px_minmax(0,1fr)_300px] lg:px-7">
-        <aside className="paper-panel order-2 p-4 lg:order-1 lg:sticky lg:top-[86px] lg:h-[calc(100vh-106px)]">
+        <aside inert={!!draft} className="paper-panel order-2 p-4 lg:order-1 lg:sticky lg:top-[86px] lg:h-[calc(100vh-106px)]">
           <div className="mb-3 flex items-center justify-between"><h2 className="section-label"><BookOpen size={15} /> 阅读库</h2><span className="count-pill">{library.length}</span></div>
           <p className="mb-3 text-xs text-[#718078]">每15秒自动同步 · {lastSynced || "正在连接"}</p>
           <div className="space-y-2 overflow-auto lg:max-h-[calc(100vh-160px)]">
@@ -313,20 +344,26 @@ export default function ReadingStudio() {
           ) : (
             <article className="paper-panel overflow-hidden">
               <div className="article-head px-5 py-5 sm:px-9"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">FOCUSED READING</p><h2 className="max-w-3xl text-2xl font-bold sm:text-3xl">{current.title}</h2></div><div className="flex gap-2"><span className="stat-chip">{wordCount(current.body)}词</span><span className="stat-chip stat-chip-amber">{learningWords.length}个待巩固词</span></div></div></div>
-              <div className="px-5 py-8 sm:px-11 sm:py-11">
+              <div id="reading-evidence-source" className="px-5 py-8 sm:px-11 sm:py-11 scroll-mt-24">
                 {related.map((doc, index) => <section key={doc.id} className={index ? "mt-7 border-t border-[#26322d]/10 pt-5" : ""}>
                   {related.length > 1 && <p className="eyebrow">{index === 0 ? "最新阅读片段" : "之前的阅读片段"} · {doc.title}</p>}
-                  <div className="reading-text" style={{ minHeight: 0 }}>{renderInteractiveText(doc.body, undefined, doc.id)}</div>
+                  <div className="reading-text" style={{ minHeight: 0 }}>{picking && draft ? sentences(doc.body).map(sentence => {
+                    const chosen = draft.evidence.some(e => e.documentId === doc.id && e.start === sentence.start && e.end === sentence.end);
+                    return <button type="button" key={sentence.start} className={`evidence-sentence ${chosen ? "evidence-chosen" : ""}`} aria-pressed={chosen} onClick={() => {
+                      if (!chosen && draft.evidence.length >= 10) { setNotice("一次最多选择10句，可以先取消一句。"); return; }
+                      setDraft({ ...draft, evidence: chosen ? draft.evidence.filter(e => !(e.documentId === doc.id && e.start === sentence.start && e.end === sentence.end)) : [...draft.evidence, { ...sentence, documentId: doc.id, title: doc.title, sourceUpdatedAt: doc.updatedAt ?? 0 }] });
+                    }}>{sentence.quote}</button>;
+                  }) : renderInteractiveText(doc.body, undefined, doc.id)}</div>
                 </section>)}
               </div>
               {parsedQuestions.length > 0 && (
-                <div className="question-zone px-5 py-7 sm:px-9 sm:py-9">
+                <div inert={picking} className="question-zone px-5 py-7 sm:px-9 sm:py-9">
                   <div className="mb-5 flex items-center justify-between gap-3"><div><p className="eyebrow">COMPREHENSION</p><h3 className="text-xl font-bold">阅读题</h3></div><span className="progress-pill">{answeredCount}/{parsedQuestions.length} 已记录</span></div>
                   <div className="space-y-6">
                     {parsedQuestions.map((question, index) => {
                       const selected = answers[`${question.documentId}:${question.number}`];
                       return (
-                        <section className="question-card" key={`${question.documentId}:${question.number}`}>
+                        <section id={`question-${question.documentId}-${question.number}`} className="question-card scroll-mt-24" key={`${question.documentId}:${question.number}`}>
                           <p className="eyebrow">{index === 0 ? "最新题目" : "保留题目"} · {question.sourceTitle}</p>
                           <div className="question-title"><span className="question-number">{question.number}</span><p>{renderInteractiveText(question.prompt, `${question.number}. ${question.prompt}`, question.documentId)}</p></div>
                           <label className="mt-3 flex items-center gap-2 text-xs text-[#637067]">本次作答<select aria-label={`第${question.number}题作答方式`} value={answerModes[`${question.documentId}:${question.number}`] ?? answerHistory.find((event) => event.documentId === question.documentId && event.questionNumber === question.number)?.mode ?? (selected ? "correction" : "independent")} onChange={(event) => setAnswerModes((existing) => ({ ...existing, [`${question.documentId}:${question.number}`]: event.target.value }))} className="rounded border p-1"><option value="independent">独立作答 / 未看讲解</option><option value="correction">看过讲解后的订正</option></select></label>
@@ -334,11 +371,12 @@ export default function ReadingStudio() {
                             <div className="mt-4 grid gap-2.5" role="radiogroup" aria-label={`第${question.number}题选项`}>
                               {question.options.map((option) => {
                                 const isSelected = selected === option.letter;
+                                const exclusion = exclusions.find(e => e.documentId === question.documentId && e.questionNumber === question.number && e.option === option.letter);
                                 const context = `${question.number}. ${question.prompt} ${option.letter}) ${option.text}`;
                                 return (
-                                  <div key={option.letter} className={`option-card ${isSelected ? "option-card-selected" : ""}`} role="radio" aria-checked={isSelected} tabIndex={0} onClick={() => selectAnswer(question.documentId, question.number, option.letter)} onKeyDown={(event) => handleOptionKey(event, question.documentId, question.number, option.letter)}>
+                                  <div key={option.letter} className={`option-with-exclusion ${exclusion?.excluded ? "option-excluded" : ""}`}><div className="flex items-stretch gap-1"><div className={`option-card flex-1 min-w-0 ${isSelected ? "option-card-selected" : ""}`} role="radio" aria-checked={isSelected} aria-disabled={exclusion?.excluded || false} tabIndex={0} onClick={() => selectAnswer(question.documentId, question.number, option.letter)} onKeyDown={(event) => handleOptionKey(event, question.documentId, question.number, option.letter)}>
                                     <span className="option-letter">{isSelected ? <Check size={16} /> : option.letter}</span><span className="option-text">{renderInteractiveText(option.text, context, question.documentId)}</span>
-                                  </div>
+                                  </div><button type="button" className="exclude-button" aria-label={`第${question.number}题${option.letter}${exclusion?.excluded ? "编辑排除理由" : "排除选项"}`} title={exclusion?.excluded ? "已排除 · 编辑理由或撤销" : "排除这个选项"} onClick={() => editExclusion(question.documentId, question.number, option.letter)}>×</button></div>{exclusion?.excluded && <div className="exclusion-note"><strong>已排除 · 你的判断</strong><p>{exclusion.reason || "暂未填写文字理由"}</p>{exclusion.evidence.map((e, i) => <blockquote key={i}>“{e.quote}” <span>— {e.title}（原句快照）</span></blockquote>)}</div>}</div>
                                 );
                               })}
                             </div>
@@ -348,6 +386,7 @@ export default function ReadingStudio() {
                             {answerHistory.filter((event) => event.documentId === question.documentId && event.questionNumber === question.number).map((event) => <p key={event.id}>{new Date(event.createdAt).toLocaleString("zh-CN")} · {event.mode === "correction" ? "讲解后订正" : "独立作答"} · {event.previousOption ? `${event.previousOption} → ` : ""}{event.selectedOption === "?" ? "暂时不会" : event.selectedOption}</p>)}
                             <p>从本功能上线起记录；旧版已有的最后选择不等于首次独立答案。</p>
                           </details>
+                          <details className="mt-3 text-xs leading-6 text-[#637067]"><summary>排除思路历史</summary>{exclusionHistory.filter(e => e.documentId === question.documentId && e.questionNumber === question.number).map(e => <div key={e.id} className="mt-2 border-t pt-2"><p>{new Date(e.createdAt).toLocaleString("zh-CN")} · {e.excluded ? "排除／更新" : "撤销排除"} {e.option}</p><p>{e.reason || "无文字理由"}</p>{e.evidence.map((quote, i) => <p key={i}>“{quote.quote}” — {quote.title}</p>)}</div>)}<p>保存你的思路变化，不自动判定排除是否正确。</p></details>
                         </section>
                       );
                     })}
@@ -359,7 +398,7 @@ export default function ReadingStudio() {
           <output className="notice-bar mt-3" aria-live="polite"><Sparkles size={15} className="shrink-0 text-[#a56b19]" />{notice}</output>
         </section>
 
-        <aside className="paper-panel order-3 p-4 sm:p-5 lg:sticky lg:top-[86px] lg:max-h-[calc(100vh-106px)] overflow-auto">
+        <aside inert={!!draft} className="paper-panel order-3 p-4 sm:p-5 lg:sticky lg:top-[86px] lg:max-h-[calc(100vh-106px)] overflow-auto">
           <ReviewBreak key={current.passageId || current.id} candidates={reviewCandidates} busy={memoryBusy} onAction={(word, action) => changeWord(word.display, word.contexts[0] || "", word.documentIds[0] || "", action)} />
           <div className="mb-3 mt-5 flex items-center justify-between"><h2 className="section-label"><Highlighter size={15} /> 生词灯</h2><span className="count-pill count-pill-amber">{learningWords.length}</span></div>
           <p className="mb-3 text-xs leading-6 text-[#718078]">琥珀：忘了 · 深蓝：弄懂了<br />蓝色逐渐变浅 → 无色：暂时掌握</p>
@@ -373,6 +412,8 @@ export default function ReadingStudio() {
         </aside>
       </div>
       {selection && <WordMemoryDialog selection={selection} word={wordMap.get(normalizeWord(selection.display))} busy={memoryBusy} onClose={() => setSelection(null)} onAction={(action) => { void changeWord(selection.display, selection.context, selection.documentId, action); }} />}
+      {draft && !picking && <ExclusionEditor draft={draft} active={exclusions.some(e => e.documentId === draft.documentId && e.questionNumber === draft.questionNumber && e.option === draft.option && e.excluded)} busy={exclusionBusy} error={exclusionError} onChange={setDraft} onClose={() => setDraft(null)} onPick={() => { setPicking(true); setTimeout(() => document.getElementById("reading-evidence-source")?.scrollIntoView({ block: "start" }), 0); }} onSave={value => void saveExclusion(value)} />}
+      {draft && picking && <div className="evidence-toolbar" role="region" aria-label="原文选句"><p>第{draft.questionNumber}题 · 排除{draft.option}：点击相关原句，再点一次取消。已选{draft.evidence.length}/10句</p><button className="primary-button" onClick={() => { setPicking(false); document.getElementById(`question-${draft.documentId}-${draft.questionNumber}`)?.scrollIntoView({ block: "start" }); }}>完成选句，返回理由</button></div>}
     </main>
   );
 }

@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { sentences, evidenceMatches } from '../lib/exclusions.ts';
+const body = '  Pandas wander.\nThey seek mates! Last line without punctuation';
+const chunks = sentences(body);
+assert.equal(chunks.length, 3);
+for (const c of chunks) assert.equal(body.slice(c.start, c.end), c.quote);
+const source = { id: 'one', body, updatedAt: 10 };
+const e = { ...chunks[0], documentId: 'one', title: 'Example', sourceUpdatedAt: 10 };
+assert.ok(evidenceMatches(e, source));
+assert.equal(evidenceMatches({ ...e, documentId: 'other' }, source), false);
+assert.equal(evidenceMatches({ ...e, quote: 'Invented quote' }, source), false);
+assert.equal(evidenceMatches({ ...e, start: -1 }, source), false);
+assert.equal(evidenceMatches(e, { ...source, updatedAt: 11 }), false);
+assert.deepEqual(sentences(' \n '), []);
+console.log('Sentence offsets, source identity, stale source and forged quote checks passed.');

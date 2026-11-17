@@ -29,6 +29,13 @@
       "when": 1794915129251,
       "tag": "0003_careful_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794922397941,
+      "tag": "0004_glossy_king_cobra",
+      "breakpoints": true
     }
   ]
 }

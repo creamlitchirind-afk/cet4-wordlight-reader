@@ -64,3 +64,26 @@ export const answerEvents = sqliteTable("answer_events", {
   mode: text("mode").notNull(),
   createdAt: integer("created_at").notNull(),
 });
+
+export const optionExclusions = sqliteTable("option_exclusions", {
+  userId: text("user_id").notNull(),
+  documentId: text("document_id").notNull(),
+  questionNumber: integer("question_number").notNull(),
+  option: text("option").notNull(),
+  excluded: integer("excluded", { mode: "boolean" }).notNull(),
+  reason: text("reason").notNull().default(""),
+  evidence: text("evidence").notNull().default("[]"),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.documentId, table.questionNumber, table.option] })]);
+
+export const exclusionEvents = sqliteTable("exclusion_events", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  documentId: text("document_id").notNull(),
+  questionNumber: integer("question_number").notNull(),
+  option: text("option").notNull(),
+  excluded: integer("excluded", { mode: "boolean" }).notNull(),
+  reason: text("reason").notNull(),
+  evidence: text("evidence").notNull(),
+  createdAt: integer("created_at").notNull(),
+});

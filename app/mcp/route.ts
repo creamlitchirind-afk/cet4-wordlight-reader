@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { answerEvents, readingAnswers, readingDocuments, unknownWords, wordEvents } from "@/db/schema";
+import { answerEvents, exclusionEvents, optionExclusions, readingAnswers, readingDocuments, unknownWords, wordEvents } from "@/db/schema";
 import { STAGE_LABELS } from "@/lib/word-memory";
 
 const VERSION = "2026-07-28";
@@ -89,6 +89,11 @@ export async function POST(request: Request) {
             additionalProperties: false,
           },
         },
+        {
+          name: "get_reading_reasoning",
+          description: "读取用户排除选项的当前状态、文字理由、原文引句及最近500条排除／撤销历史。只是用户判断，不是标准答案。",
+          inputSchema: { type: "object", properties: { documentId: { type: "string" } }, additionalProperties: false },
+        },
       ],
     });
   }
@@ -96,6 +101,12 @@ export async function POST(request: Request) {
   const name = payload.params?.name;
   const args = payload.params?.arguments ?? {};
   const db = getDb();
+  if (name === "get_reading_reasoning") {
+    const documentId = String(args.documentId || "").trim();
+    const rows = await db.select().from(optionExclusions).where(documentId ? and(eq(optionExclusions.userId, uid), eq(optionExclusions.documentId, documentId)) : eq(optionExclusions.userId, uid));
+    const history = await db.select().from(exclusionEvents).where(documentId ? and(eq(exclusionEvents.userId, uid), eq(exclusionEvents.documentId, documentId)) : eq(exclusionEvents.userId, uid)).orderBy(desc(exclusionEvents.createdAt)).limit(500);
+    return reply(payload.id, { content: [{ type: "text", text: JSON.stringify({ exclusions: rows.map(r => ({ ...r, evidence: parseList(r.evidence) })), history: history.map(r => ({ ...r, evidence: parseList(r.evidence) })), note: "这是用户的排除思路，不代表标准答案；引句是保存时快照。历史最多返回最近500条。" }, null, 2) }] });
+  }
   if (name === "list_unknown_words") {
     const limit = Math.min(200, Math.max(1, Number(args.limit || 100)));
     const rows = await db.select().from(unknownWords).where(eq(unknownWords.userId, uid)).orderBy(desc(unknownWords.lastClickedAt)).limit(limit);
@@ -160,11 +171,17 @@ export async function POST(request: Request) {
       ? await db.select().from(readingAnswers).where(and(eq(readingAnswers.userId, uid), eq(readingAnswers.documentId, documentId))).orderBy(readingAnswers.questionNumber)
       : await db.select().from(readingAnswers).where(eq(readingAnswers.userId, uid)).orderBy(desc(readingAnswers.updatedAt));
     const history = await db.select().from(answerEvents).where(documentId ? and(eq(answerEvents.userId, uid), eq(answerEvents.documentId, documentId)) : eq(answerEvents.userId, uid)).orderBy(desc(answerEvents.createdAt)).limit(500);
-    const data = rows.map((row) => ({
+    const exclusions = await db.select().from(optionExclusions).where(documentId ? and(eq(optionExclusions.userId, uid), eq(optionExclusions.documentId, documentId)) : eq(optionExclusions.userId, uid));
+    const reasoningHistory = await db.select().from(exclusionEvents).where(documentId ? and(eq(exclusionEvents.userId, uid), eq(exclusionEvents.documentId, documentId)) : eq(exclusionEvents.userId, uid)).orderBy(desc(exclusionEvents.createdAt)).limit(500);
+    const questions: { documentId: string; questionNumber: number; selectedOption: string | null; updatedAt: number }[] = [...rows];
+    for (const e of exclusions) if (!questions.some(q => q.documentId === e.documentId && q.questionNumber === e.questionNumber)) questions.push({ documentId: e.documentId, questionNumber: e.questionNumber, selectedOption: null, updatedAt: e.updatedAt });
+    const data = questions.map((row) => ({
       documentId: row.documentId,
       questionNumber: row.questionNumber,
       selectedOption: row.selectedOption,
-      status: row.selectedOption === "?" ? "暂时不会" : "已选择",
+      status: row.selectedOption === null ? "尚未选择，仅有排除思路" : row.selectedOption === "?" ? "暂时不会" : "已选择",
+      exclusions: exclusions.filter(e => e.documentId === row.documentId && e.questionNumber === row.questionNumber).map(e => ({ ...e, evidence: parseList(e.evidence) })),
+      exclusionHistory: reasoningHistory.filter(e => e.documentId === row.documentId && e.questionNumber === row.questionNumber).map(e => ({ ...e, evidence: parseList(e.evidence) })),
       updatedAt: new Date(row.updatedAt).toISOString(),
       history: history.filter((event) => event.documentId === row.documentId && event.questionNumber === row.questionNumber),
       historyNote: "历史从功能上线后开始记录；previousOption可能是旧版保存的最后答案，不等于首次独立答案。",
