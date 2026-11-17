@@ -314,6 +314,29 @@ label:focus-within {
   color: #44310e;
 }
 
+.memory-stage-0 { background: linear-gradient(transparent 32%, #efc66c 32%, #efc66c 92%, transparent 92%); color: #44310e; }
+.memory-stage-1 { background: #285a91; color: #fff; }
+.memory-stage-2 { background: #a4c7e9; color: #163b65; }
+.memory-stage-3 { background: #e1edf8; color: #24496b; }
+.memory-stage-4 { background: transparent; color: inherit; }
+.memory-stage-1:hover { background: #214c7c; color: #fff; }
+.word-card.memory-card-1, .word-card.memory-card-1:hover { background: #285a91; color: white; border-color: #285a91; }
+.word-card.memory-card-2, .word-card.memory-card-2:hover { background: #c1d8ed; color: #163b65; border-color: #a4c7e9; }
+.word-card.memory-card-3, .word-card.memory-card-3:hover { background: #e8f0f8; color: #24496b; border-color: #c7d8e8; }
+.word-card.memory-card-4, .word-card.memory-card-4:hover { background: #fffef9; color: #526158; border-color: #d8ddd6; }
+.memory-dialog { position: fixed; inset: 0; margin: auto; width: min(92vw, 520px); max-height: 85dvh; overflow: auto; border: 1px solid #d5ddd5; border-radius: 20px; padding: 1.4rem; background: #fbfaf5; color: #26322d; box-shadow: 0 20px 80px #152b3040; }
+.memory-dialog::backdrop { background: #142c3555; backdrop-filter: blur(2px); }
+.memory-actions { display: grid; gap: .5rem; margin-top: .85rem; }
+.memory-actions button { border: 1px solid #bdccda; border-radius: 12px; background: #eaf0f6; color: #234568; padding: .65rem .8rem; text-align: left; font-size: .86rem; font-weight: 700; }
+.memory-actions button span { display: block; font-size: .73rem; font-weight: 400; margin-top: .2rem; }
+.memory-actions button:hover { background: #dbe8f4; }
+.memory-actions button:disabled { opacity: .5; cursor: wait; }
+.memory-context { margin: .75rem 0; padding: .8rem; border-radius: 12px; background: #eeeede; font-family: Georgia, serif; font-size: .95rem; line-height: 1.7; overflow-wrap: anywhere; }
+.review-break { border: 1px solid #cbdace; border-radius: 14px; background: #f0f4ec; padding: .8rem; }
+.review-break-toggle { width: 100%; text-align: left; font-size: .87rem; font-weight: 700; color: #365f4c; }
+.review-break-toggle span { display: block; margin-top: .25rem; font-size: .7rem; font-weight: 400; color: #637067; }
+.review-word { margin: 1rem 0; color: #26322d; font-family: Georgia, serif; font-size: 1.65rem; overflow-wrap: anywhere; }
+
 .question-zone {
   border-top: 1px solid rgb(38 50 45 / 9%);
   background: #f2f3ed;

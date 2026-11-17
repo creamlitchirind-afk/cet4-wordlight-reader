@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db";
-import { readingAnswers, readingDocuments, unknownWords } from "@/db/schema";
+import { answerEvents, readingAnswers, readingDocuments, unknownWords, wordEvents } from "@/db/schema";
+import { STAGE_LABELS } from "@/lib/word-memory";
 
 const VERSION = "2026-07-28";
 const OWNER_KEY = "site-owner";
@@ -75,6 +76,11 @@ export async function POST(request: Request) {
           },
         },
         {
+          name: "get_word_memory_history",
+          description: "读取单词的记忆颜色阶段和最近100次弄懂、记住、遗忘操作。stage为0琥珀，1至3蓝色渐浅，4无色，-1误点取消。升级至少间隔24小时。",
+          inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"], additionalProperties: false },
+        },
+        {
           name: "list_reading_answers",
           description: "读取用户在四级阅读题中选择的选项；问号表示用户明确选择了‘暂时不会’。",
           inputSchema: {
@@ -97,6 +103,11 @@ export async function POST(request: Request) {
       word: row.display,
       normalized: row.normalized,
       clickCount: row.clickCount,
+      stage: row.stage,
+      memoryStatus: STAGE_LABELS[row.stage],
+      recallCount: row.recallCount,
+      forgetCount: row.forgetCount,
+      lastAdvancedAt: row.lastAdvancedAt ? new Date(row.lastAdvancedAt).toISOString() : null,
       contexts: parseList(row.contexts),
       lastClickedAt: new Date(row.lastClickedAt).toISOString(),
     }));
@@ -107,6 +118,12 @@ export async function POST(request: Request) {
     const rows = await db.select().from(unknownWords).where(and(eq(unknownWords.userId, uid), eq(unknownWords.normalized, word))).limit(1);
     const data = rows[0] ? { word: rows[0].display, contexts: parseList(rows[0].contexts), clickCount: rows[0].clickCount } : { word, contexts: [], clickCount: 0 };
     return reply(payload.id, { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] });
+  }
+  if (name === "get_word_memory_history") {
+    const word = String(args.word || "").toLowerCase().trim();
+    const state = await db.select().from(unknownWords).where(and(eq(unknownWords.userId, uid), eq(unknownWords.normalized, word))).limit(1);
+    const history = await db.select().from(wordEvents).where(and(eq(wordEvents.userId, uid), eq(wordEvents.normalized, word))).orderBy(desc(wordEvents.createdAt)).limit(100);
+    return reply(payload.id, { content: [{ type: "text", text: JSON.stringify({ state: state[0] ?? null, history, limit: 100 }, null, 2) }] });
   }
   if (name === "list_reading_documents") {
     const rows = await db.select({ id: readingDocuments.id, title: readingDocuments.title, updatedAt: readingDocuments.updatedAt }).from(readingDocuments).where(eq(readingDocuments.userId, uid)).orderBy(desc(readingDocuments.updatedAt));
@@ -142,12 +159,15 @@ export async function POST(request: Request) {
     const rows = documentId
       ? await db.select().from(readingAnswers).where(and(eq(readingAnswers.userId, uid), eq(readingAnswers.documentId, documentId))).orderBy(readingAnswers.questionNumber)
       : await db.select().from(readingAnswers).where(eq(readingAnswers.userId, uid)).orderBy(desc(readingAnswers.updatedAt));
+    const history = await db.select().from(answerEvents).where(documentId ? and(eq(answerEvents.userId, uid), eq(answerEvents.documentId, documentId)) : eq(answerEvents.userId, uid)).orderBy(desc(answerEvents.createdAt)).limit(500);
     const data = rows.map((row) => ({
       documentId: row.documentId,
       questionNumber: row.questionNumber,
       selectedOption: row.selectedOption,
       status: row.selectedOption === "?" ? "暂时不会" : "已选择",
       updatedAt: new Date(row.updatedAt).toISOString(),
+      history: history.filter((event) => event.documentId === row.documentId && event.questionNumber === row.questionNumber),
+      historyNote: "历史从功能上线后开始记录；previousOption可能是旧版保存的最后答案，不等于首次独立答案。",
     }));
     return reply(payload.id, { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] });
   }
